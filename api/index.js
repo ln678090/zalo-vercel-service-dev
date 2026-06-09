@@ -106,20 +106,34 @@ async function saveCredential(payload) {
   if (error) throw error;
 }
 
+// async function saveQrToDb(qrBase64) {
+//   const db = getSupabase();
+//   if (!db) return;
+//   await db
+//     .from("zalo_sessions")
+//     .upsert({
+//       id: "primary",
+//       is_active: false,
+//       qr_base64: qrBase64,
+//       updated_at: new Date().toISOString(),
+//     })
+//     .catch((e) => console.error("Lưu QR vào DB lỗi:", e.message));
+// }
 async function saveQrToDb(qrBase64) {
   const db = getSupabase();
   if (!db) return;
-  await db
-    .from("zalo_sessions")
-    .upsert({
+  try {
+    const { error } = await db.from("zalo_sessions").upsert({
       id: "primary",
       is_active: false,
       qr_base64: qrBase64,
       updated_at: new Date().toISOString(),
-    })
-    .catch((e) => console.error("Lưu QR vào DB lỗi:", e.message));
+    });
+    if (error) console.error("Lưu QR vào DB lỗi:", error.message);
+  } catch (e) {
+    console.error("Lưu QR vào DB lỗi:", e.message);
+  }
 }
-
 async function loginByDb() {
   const row = await getActiveCredential().catch(() => null);
   if (!row?.credentials) return false;
