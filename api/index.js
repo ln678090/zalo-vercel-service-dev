@@ -91,9 +91,7 @@ async function getActiveCredential() {
 async function saveCredential(payload) {
   const db = getSupabase();
   if (!db) {
-    console.error(
-      "Thiếu SUPABASE_URL hoặc SUPABASE_SERVICE_ROLE_KEY, bỏ qua lưu DB",
-    );
+    console.error("Thiếu Supabase config");
     return;
   }
   const { error } = await db.from("zalo_sessions").upsert({
@@ -106,19 +104,24 @@ async function saveCredential(payload) {
   if (error) throw error;
 }
 
-// async function saveQrToDb(qrBase64) {
-//   const db = getSupabase();
-//   if (!db) return;
-//   await db
-//     .from("zalo_sessions")
-//     .upsert({
-//       id: "primary",
-//       is_active: false,
-//       qr_base64: qrBase64,
-//       updated_at: new Date().toISOString(),
-//     })
-//     .catch((e) => console.error("Lưu QR vào DB lỗi:", e.message));
-// }
+// ✅ MỚI: Xóa session cũ + QR cũ trong DB
+async function clearStaleSession() {
+  const db = getSupabase();
+  if (!db) return;
+  try {
+    const { error } = await db.from("zalo_sessions").upsert({
+      id: "primary",
+      is_active: false,
+      qr_base64: null,
+      credentials: null,
+      updated_at: new Date().toISOString(),
+    });
+    if (error) console.error("Xóa session cũ lỗi:", error.message);
+  } catch (e) {
+    console.error("Xóa session cũ lỗi:", e.message);
+  }
+}
+
 async function saveQrToDb(qrBase64) {
   const db = getSupabase();
   if (!db) return;
@@ -134,6 +137,16 @@ async function saveQrToDb(qrBase64) {
     console.error("Lưu QR vào DB lỗi:", e.message);
   }
 }
+
+// ✅ MỚI: Reset toàn bộ state về ban đầu
+function resetLoginState() {
+  api = null;
+  connected = false;
+  loginMode = null;
+  loginPromise = null;
+  latestQrBase64 = null;
+}
+
 async function loginByDb() {
   const row = await getActiveCredential().catch(() => null);
   if (!row?.credentials) return false;
@@ -145,32 +158,33 @@ async function loginByDb() {
     return true;
   } catch (e) {
     console.error("Login DB lỗi:", e.message);
+    // ✅ Session hết hạn → xóa để không dùng lại
+    await clearStaleSession();
     return false;
   }
 }
 
 function startQrLogin() {
   if (api || loginPromise) return;
-  loginMode = "qr-first-time";
+  loginMode = "qr";
+  latestQrBase64 = null; // ✅ Reset QR cũ trong RAM
 
   loginPromise = zalo
     .loginQR({}, async (event) => {
       if (!event) return;
-
       if (event.type === LoginQRCallbackEventType.QRCodeGenerated) {
         const img = event?.data?.image;
         if (!img) return;
         latestQrBase64 = img;
-        await saveQrToDb(img); //  Lưu QR vào Supabase
-        console.log(`Mở link QR login: ${PUBLIC_BASE_URL}/login-qr`);
+        await saveQrToDb(img); // ✅ Lưu QR mới vào DB
+        console.log(`QR mới đã tạo. Mở: ${PUBLIC_BASE_URL}/login-qr`);
         return;
       }
-
       if (event.type === LoginQRCallbackEventType.GotLoginInfo) {
         console.log("Nhận login info, đang lưu vào DB...");
-        saveCredential(event.data).catch((e) => {
-          console.error("Lưu DB lỗi:", e.message);
-        });
+        saveCredential(event.data).catch((e) =>
+          console.error("Lưu DB lỗi:", e.message),
+        );
       }
     })
     .then((loggedApi) => {
@@ -179,9 +193,7 @@ function startQrLogin() {
       attachListenerState(api);
       console.log("Đăng nhập QR thành công");
     })
-    .catch((e) => {
-      console.error("QR login lỗi:", e.message, e.stack);
-    })
+    .catch((e) => console.error("QR login lỗi:", e.message, e.stack))
     .finally(() => {
       loginPromise = null;
     });
@@ -193,33 +205,47 @@ async function initZalo() {
   if (!ok) startQrLogin();
 }
 
-//  Gọi initZalo ngay khi module load (không phụ thuộc app.listen)
 initZalo();
 
-app.get("/login-qr", async (_, res) => {
-  // Ưu tiên RAM, nếu không có thì đọc từ DB
-  let qr = latestQrBase64;
+// ✅ /login-qr: Luôn tạo QR mới nếu chưa login hoặc ?force=1
+app.get("/login-qr", async (req, res) => {
+  const forceNew = req.query.force === "1" || !api;
 
-  if (!qr) {
-    const db = getSupabase();
-    if (db) {
-      const { data } = await db
-        .from("zalo_sessions")
-        .select("qr_base64")
-        .eq("id", "primary")
-        .maybeSingle();
-      qr = data?.qr_base64 || null;
-    }
+  if (forceNew && !loginPromise) {
+    resetLoginState();
+    await clearStaleSession();
+    startQrLogin();
   }
 
-  if (!qr) {
-    if (!api && !loginPromise) startQrLogin();
-    return res.status(202).send("Đang tạo QR login, refresh lại sau 1-2 giây");
+  // Đợi tối đa 8 giây để QR được tạo
+  const deadline = Date.now() + 8000;
+  while (!latestQrBase64 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 300));
   }
 
-  res.send(
-    `<!doctype html><html><head><meta charset="utf-8" /><title>Zalo Login QR</title></head><body style="font-family:sans-serif;padding:24px"><h3>Quét QR để đăng nhập Zalo</h3><p>QR chỉ dùng ở lần đầu hoặc khi session DB hết hạn.</p><img src="data:image/png;base64,${qr}" style="max-width:320px;border:1px solid #ccc" alt="Zalo login QR" /></body></html>`,
-  );
+  if (!latestQrBase64) {
+    return res.status(202).send(`
+      <!doctype html><html><head><meta charset="utf-8"/>
+      <meta http-equiv="refresh" content="3"/>
+      <title>Zalo Login QR</title></head>
+      <body style="font-family:sans-serif;padding:24px">
+        <h3>⏳ Đang tạo QR, tự động refresh sau 3 giây...</h3>
+        <p>Nếu quá lâu hãy <a href="/login-qr?force=1">bấm vào đây để tạo lại QR mới</a>.</p>
+      </body></html>
+    `);
+  }
+
+  res.send(`
+    <!doctype html><html><head><meta charset="utf-8"/>
+    <title>Zalo Login QR</title></head>
+    <body style="font-family:sans-serif;padding:24px">
+      <h3>📱 Quét QR để đăng nhập Zalo</h3>
+      <p>QR này mới tạo lúc ${new Date().toLocaleTimeString("vi-VN")}.
+         Nếu hết hạn, <a href="/login-qr?force=1">bấm đây để tạo QR mới</a>.</p>
+      <img src="data:image/png;base64,${latestQrBase64}"
+           style="max-width:320px;border:1px solid #ccc" alt="Zalo login QR"/>
+    </body></html>
+  `);
 });
 
 app.get("/health", (_, res) => {
@@ -246,26 +272,22 @@ app.post("/find-user-by-phone", requireSecret, async (req, res) => {
   }
 });
 
-//  Helper dùng chung cho cả 2 endpoint upload
-function handleFileUpload(req, res) {
+function handleFileUpload(req) {
   return new Promise((resolve, reject) => {
     const busboy = Busboy({ headers: req.headers });
     const fields = {};
     let tmpPath = null;
     let writeStream = null;
-
     busboy.on("field", (name, value) => {
       fields[name] = value;
     });
-
     busboy.on("file", (_, file, info) => {
       const tmpName = `${Date.now()}-${info.filename}`;
-      tmpPath = path.join("/tmp", tmpName); //  Dùng /tmp tuyệt đối
-      fs.mkdirSync("/tmp", { recursive: true }); //  /tmp đã tồn tại sẵn trên Vercel
+      tmpPath = path.join("/tmp", tmpName);
+      fs.mkdirSync("/tmp", { recursive: true });
       writeStream = fs.createWriteStream(tmpPath);
       file.pipe(writeStream);
     });
-
     busboy.on("finish", () => resolve({ fields, tmpPath, writeStream }));
     busboy.on("error", reject);
     req.pipe(busboy);
@@ -276,20 +298,16 @@ app.post("/send-root-qr-by-phone", requireSecret, async (req, res) => {
   let tmpPath = null;
   try {
     const contentType = req.headers["content-type"] || "";
-    if (!contentType.includes("multipart/form-data")) {
-      return res.status(415).json({
-        error: "Unsupported content type",
-        expected: "multipart/form-data",
-      });
-    }
+    if (!contentType.includes("multipart/form-data"))
+      return res
+        .status(415)
+        .json({
+          error: "Unsupported content type",
+          expected: "multipart/form-data",
+        });
 
-    const {
-      fields,
-      tmpPath: tp,
-      writeStream,
-    } = await handleFileUpload(req, res);
+    const { fields, tmpPath: tp, writeStream } = await handleFileUpload(req);
     tmpPath = tp;
-
     if (!fields.phone)
       return res.status(400).json({ error: "phone is required" });
     if (!tmpPath) return res.status(400).json({ error: "file is required" });
@@ -310,7 +328,6 @@ app.post("/send-root-qr-by-phone", requireSecret, async (req, res) => {
         .status(404)
         .json({ error: "Không tìm thấy user Zalo theo số điện thoại" });
     }
-
     const result = await api.sendMessage(
       { msg: fields.caption || "Ảnh gửi từ hệ thống", attachments: [tmpPath] },
       threadId,
@@ -328,20 +345,16 @@ app.post("/upload-and-send", requireSecret, async (req, res) => {
   let tmpPath = null;
   try {
     const contentType = req.headers["content-type"] || "";
-    if (!contentType.includes("multipart/form-data")) {
-      return res.status(415).json({
-        error: "Unsupported content type",
-        expected: "multipart/form-data",
-      });
-    }
+    if (!contentType.includes("multipart/form-data"))
+      return res
+        .status(415)
+        .json({
+          error: "Unsupported content type",
+          expected: "multipart/form-data",
+        });
 
-    const {
-      fields,
-      tmpPath: tp,
-      writeStream,
-    } = await handleFileUpload(req, res);
+    const { fields, tmpPath: tp, writeStream } = await handleFileUpload(req);
     tmpPath = tp;
-
     if (!fields.phone)
       return res.status(400).json({ error: "phone is required" });
     if (!tmpPath) return res.status(400).json({ error: "file is required" });
@@ -362,7 +375,6 @@ app.post("/upload-and-send", requireSecret, async (req, res) => {
         .status(404)
         .json({ error: "Không tìm thấy user Zalo theo số điện thoại" });
     }
-
     const result = await api.sendMessage(
       { msg: fields.caption || "Ảnh gửi từ hệ thống", attachments: [tmpPath] },
       threadId,
@@ -382,7 +394,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || "Internal Server Error" });
 });
 
-//  Chỉ listen khi chạy local
 if (!process.env.VERCEL) {
   app.listen(3000, () => {
     console.log("Server chạy ở http://localhost:3000");
