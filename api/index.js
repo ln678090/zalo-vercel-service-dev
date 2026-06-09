@@ -6,9 +6,10 @@ import { loadEnvFile } from "node:process";
 import path from "path";
 import sharp from "sharp";
 import { LoginQRCallbackEventType, ThreadType, Zalo } from "zca-js";
-
 if (!process.env.VERCEL) {
-  loadEnvFile(".env");
+  try {
+    loadEnvFile(".env");
+  } catch {}
 }
 const app = express();
 app.use(express.json());
