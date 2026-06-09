@@ -104,7 +104,7 @@ async function saveCredential(payload) {
   if (error) throw error;
 }
 
-// ✅ MỚI: Xóa session cũ + QR cũ trong DB
+//  MỚI: Xóa session cũ + QR cũ trong DB
 async function clearStaleSession() {
   const db = getSupabase();
   if (!db) return;
@@ -138,7 +138,7 @@ async function saveQrToDb(qrBase64) {
   }
 }
 
-// ✅ MỚI: Reset toàn bộ state về ban đầu
+//  MỚI: Reset toàn bộ state về ban đầu
 function resetLoginState() {
   api = null;
   connected = false;
@@ -158,7 +158,7 @@ async function loginByDb() {
     return true;
   } catch (e) {
     console.error("Login DB lỗi:", e.message);
-    // ✅ Session hết hạn → xóa để không dùng lại
+    //  Session hết hạn → xóa để không dùng lại
     await clearStaleSession();
     return false;
   }
@@ -167,7 +167,7 @@ async function loginByDb() {
 function startQrLogin() {
   if (api || loginPromise) return;
   loginMode = "qr";
-  latestQrBase64 = null; // ✅ Reset QR cũ trong RAM
+  latestQrBase64 = null; //  Reset QR cũ trong RAM
 
   loginPromise = zalo
     .loginQR({}, async (event) => {
@@ -176,7 +176,7 @@ function startQrLogin() {
         const img = event?.data?.image;
         if (!img) return;
         latestQrBase64 = img;
-        await saveQrToDb(img); // ✅ Lưu QR mới vào DB
+        await saveQrToDb(img); //  Lưu QR mới vào DB
         console.log(`QR mới đã tạo. Mở: ${PUBLIC_BASE_URL}/login-qr`);
         return;
       }
@@ -207,7 +207,7 @@ async function initZalo() {
 
 initZalo();
 
-// ✅ /login-qr: Luôn tạo QR mới nếu chưa login hoặc ?force=1
+//  /login-qr: Luôn tạo QR mới nếu chưa login hoặc ?force=1
 app.get("/login-qr", async (req, res) => {
   const forceNew = req.query.force === "1" || !api;
 
@@ -299,12 +299,10 @@ app.post("/send-root-qr-by-phone", requireSecret, async (req, res) => {
   try {
     const contentType = req.headers["content-type"] || "";
     if (!contentType.includes("multipart/form-data"))
-      return res
-        .status(415)
-        .json({
-          error: "Unsupported content type",
-          expected: "multipart/form-data",
-        });
+      return res.status(415).json({
+        error: "Unsupported content type",
+        expected: "multipart/form-data",
+      });
 
     const { fields, tmpPath: tp, writeStream } = await handleFileUpload(req);
     tmpPath = tp;
@@ -346,12 +344,10 @@ app.post("/upload-and-send", requireSecret, async (req, res) => {
   try {
     const contentType = req.headers["content-type"] || "";
     if (!contentType.includes("multipart/form-data"))
-      return res
-        .status(415)
-        .json({
-          error: "Unsupported content type",
-          expected: "multipart/form-data",
-        });
+      return res.status(415).json({
+        error: "Unsupported content type",
+        expected: "multipart/form-data",
+      });
 
     const { fields, tmpPath: tp, writeStream } = await handleFileUpload(req);
     tmpPath = tp;
