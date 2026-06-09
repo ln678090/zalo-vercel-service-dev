@@ -2,10 +2,10 @@
   "name": "zalo-vercel-service",
   "version": "1.0.0",
   "type": "module",
+  "main": "api/index.js",
   "scripts": {
     "dev": "node api/index.js",
-    "start": "node api/index.js",
-    "main": "api/index.js"
+    "start": "node api/index.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.53.0",
